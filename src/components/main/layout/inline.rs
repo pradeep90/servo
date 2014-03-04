@@ -633,7 +633,6 @@ impl Flow for InlineFlow {
 
         for box_ in self.boxes.iter() {
             debug!("Flow: measuring {:s}", box_.debug_str());
-            box_.compute_borders(box_.style());
             let (this_minimum_width, this_preferred_width) =
                 box_.minimum_and_preferred_widths();
             min_width = Au::max(min_width, this_minimum_width);

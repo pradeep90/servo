@@ -611,14 +611,13 @@ impl<'a> FlowConstructor<'a> {
         });
 
         let boxes_len = boxes.len();
-        parent_box.compute_borders(parent_box.style());
 
         for (i,box_) in boxes.iter().enumerate() {
             if box_.inline_info.with( |data| data.is_none() ) {
                 box_.inline_info.set(Some(InlineInfo::new()));
             }
 
-            let mut border = parent_box.border.get();
+            let mut border = parent_box.border();
             if i != 0 {
                 border.left = Zero::zero();
             }

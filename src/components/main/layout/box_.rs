@@ -77,11 +77,6 @@ pub struct Box {
     /// The size includes padding and border, but not margin.
     border_box: RefCell<Rect<Au>>,
 
-    /// The border of the content box.
-    ///
-    /// FIXME(pcwalton): This need not be stored in the box.
-    border: RefCell<SideOffsets2D<Au>>,
-
     /// The padding of the content box.
     padding: RefCell<SideOffsets2D<Au>>,
 
@@ -311,7 +306,7 @@ pub struct InlineParentInfo {
 macro_rules! def_noncontent( ($side:ident, $get:ident, $inline_get:ident) => (
     impl Box {
         pub fn $get(&self) -> Au {
-            self.border.get().$side + self.padding.get().$side
+            self.border().$side + self.padding.get().$side
         }
 
         pub fn $inline_get(&self) -> Au {
@@ -389,7 +384,6 @@ impl Box {
             node: OpaqueNode::from_thread_safe_layout_node(node),
             style: node.style().clone(),
             border_box: RefCell::new(Au::zero_rect()),
-            border: RefCell::new(Zero::zero()),
             padding: RefCell::new(Zero::zero()),
             margin: RefCell::new(Zero::zero()),
             specific: constructor.build_specific_box_info_for_node(node),
@@ -408,7 +402,6 @@ impl Box {
             node: node,
             style: style,
             border_box: RefCell::new(Au::zero_rect()),
-            border: RefCell::new(Zero::zero()),
             padding: RefCell::new(Zero::zero()),
             margin: RefCell::new(Zero::zero()),
             specific: specific,
@@ -426,78 +419,6 @@ impl Box {
         }
     }
 
-    // CSS Section 10.6.4
-    // We have to solve the constraint equation:
-    // top + bottom + height + (vertical border + padding) = height of
-    // containing block (`screen_height`)
-    //
-    // `y`: static position of the element
-    //TODO(ibnc) take into account padding.
-    pub fn get_y_coord_and_new_height_if_fixed(&self,
-                                               screen_height: Au,
-                                               mut height: Au,
-                                               mut y: Au,
-                                               is_fixed: bool)
-                                               -> (Au, Au) {
-        if is_fixed {
-            let position_offsets = self.position_offsets.get();
-            match (position_offsets.top, position_offsets.bottom) {
-                (Au(0), Au(0)) => {}
-                (Au(0), _) => {
-                    y = screen_height - position_offsets.bottom - height;
-                }
-                (_, Au(0)) => {
-                    y = position_offsets.top;
-                }
-                (_, _) => {
-                    y = position_offsets.top;
-                    match MaybeAuto::from_style(self.style().Box.get().height, Au(0)) {
-                        Auto => {
-                            height = screen_height - position_offsets.top - position_offsets.bottom;
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-        return (y, height);
-    }
-
-    // CSS Section 10.3.7
-    //TODO(ibnc) removing padding when width needs to be stretched.
-    pub fn get_x_coord_and_new_width_if_fixed(&self,
-                                              screen_width: Au,
-                                              screen_height: Au,
-                                              mut width: Au,
-                                              mut x: Au,
-                                              is_fixed: bool)
-                                              -> (Au, Au) {
-        if is_fixed {
-            self.compute_positioned_offsets(self.style(), screen_width, screen_height);
-            let position_offsets = self.position_offsets.get();
-
-            match (position_offsets.left, position_offsets.right) {
-                (Au(0), Au(0)) => {}
-                (_, Au(0)) => {
-                   x = position_offsets.left;
-                }
-                (Au(0), _) => {
-                    x = screen_width - position_offsets.right - width;
-                }
-                (_, _) => {
-                    x = position_offsets.left;
-                    match MaybeAuto::from_style(self.style().Box.get().width, Au(0)) {
-                        Auto => {
-                            width = screen_width - position_offsets.left - position_offsets.right;
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-        return (x, width);
-    }
-
     /// Transforms this box into another box of the given type, with the given size, preserving all
     /// the other data.
     pub fn transform(&self, size: Size2D<Au>, specific: SpecificBoxInfo) -> Box {
@@ -505,7 +426,6 @@ impl Box {
             node: self.node,
             style: self.style.clone(),
             border_box: RefCell::new(Rect(self.border_box.get().origin, size)),
-            border: RefCell::new(self.border.get()),
             padding: RefCell::new(self.padding.get()),
             margin: RefCell::new(self.margin.get()),
             specific: specific,
@@ -533,8 +453,9 @@ impl Box {
         let padding_left = self.compute_padding_length(style.Padding.get().padding_left, Au(0));
         let padding_right = self.compute_padding_length(style.Padding.get().padding_right, Au(0));
 
+        let border = self.border();
         width + margin_left + margin_right + padding_left + padding_right +
-            self.border.get().left + self.border.get().right
+            border.left + border.right
     }
 
     pub fn calculate_line_height(&self, font_size: Au) -> Au {
@@ -545,10 +466,8 @@ impl Box {
         }
     }
 
-    /// Populates the box model border parameters from the given computed style.
-    ///
-    /// FIXME(pcwalton): This should not be necessary. Just go to the style.
-    pub fn compute_borders(&self, style: &ComputedValues) {
+    /// Get the border for this box from the style.
+    pub fn border(&self) -> SideOffsets2D<Au> {
         #[inline]
         fn width(width: Au, style: border_style::T) -> Au {
             if style == border_style::none {
@@ -558,14 +477,16 @@ impl Box {
             }
         }
 
-        self.border.set(SideOffsets2D::new(width(style.Border.get().border_top_width,
-                                                 style.Border.get().border_top_style),
-                                           width(style.Border.get().border_right_width,
-                                                 style.Border.get().border_right_style),
-                                           width(style.Border.get().border_bottom_width,
-                                                 style.Border.get().border_bottom_style),
-                                           width(style.Border.get().border_left_width,
-                                                 style.Border.get().border_left_style)))
+        let border_style = self.style().Border.get();
+
+        SideOffsets2D::new(width(border_style.border_top_width,
+                                 border_style.border_top_style),
+                           width(border_style.border_right_width,
+                                 border_style.border_right_style),
+                           width(border_style.border_bottom_width,
+                                 border_style.border_bottom_style),
+                           width(border_style.border_left_width,
+                                 border_style.border_left_style))
     }
 
     pub fn compute_positioned_offsets(&self, style: &ComputedValues, containing_width: Au, containing_height: Au) {
@@ -607,18 +528,19 @@ impl Box {
 
     pub fn padding_box_size(&self) -> Size2D<Au> {
         let border_box_size = self.border_box.get().size;
-        Size2D(border_box_size.width - self.border.get().left - self.border.get().right,
-               border_box_size.height - self.border.get().top - self.border.get().bottom)
+        let border = self.border();
+        Size2D(border_box_size.width - border.left - border.right,
+               border_box_size.height - border.top - border.bottom)
     }
 
     pub fn border_and_padding_horiz(&self) -> Au {
-        self.border.get().left + self.border.get().right + self.padding.get().left
-            + self.padding.get().right
+        let border = self.border();
+        border.left + border.right + self.padding.get().left + self.padding.get().right
     }
 
     pub fn border_and_padding_vert(&self) -> Au {
-        self.border.get().top + self.border.get().bottom + self.padding.get().top
-            + self.padding.get().bottom
+        let border = self.border();
+        border.top + border.bottom + self.padding.get().top + self.padding.get().bottom
     }
 
     pub fn noncontent_width(&self) -> Au {
@@ -763,8 +685,9 @@ impl Box {
     }
 
     /// Returns the sum of margin, border, and padding on the left.
+    // TODO(pradeep): This should be called left_offset
     pub fn offset(&self) -> Au {
-        self.margin.get().left + self.border.get().left + self.padding.get().left
+        self.margin.get().left + self.border().left + self.padding.get().left
     }
 
     /// Returns true if this element is replaced content. This is true for images, form elements,
@@ -948,7 +871,7 @@ impl Box {
                                        lists: &RefCell<DisplayListCollection<E>>,
                                        abs_bounds: &Rect<Au>) {
         // Fast path.
-        let border = self.border.get();
+        let border = self.border();
         if border.is_zero() {
             return
         }
@@ -1584,7 +1507,7 @@ impl Box {
 
         format!("({}{}{}{})",
                 class_name,
-                self.side_offsets_debug_string("b", self.border.get()),
+                self.side_offsets_debug_string("b", self.border()),
                 self.side_offsets_debug_string("p", self.padding.get()),
                 self.side_offsets_debug_string("m", self.margin.get()))
     }
@@ -1611,9 +1534,10 @@ impl Box {
                                             iframe_box: &IframeBoxInfo,
                                             offset: Point2D<Au>,
                                             layout_context: &LayoutContext) {
-        let left = offset.x + self.margin.get().left + self.border.get().left +
+        let border = self.border();
+        let left = offset.x + self.margin.get().left + border.left +
             self.padding.get().left;
-        let top = offset.y + self.margin.get().top + self.border.get().top +
+        let top = offset.y + self.margin.get().top + self.border().top +
             self.padding.get().top;
         let width = self.border_box.get().size.width - self.noncontent_width();
         let height = self.border_box.get().size.height - self.noncontent_height();
